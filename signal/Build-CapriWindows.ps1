@@ -1,6 +1,7 @@
 ﻿# Builds YOUR Windows Capri (app/) with the classic .NET Framework compiler, exactly like the original build.ps1,
 # now including app\Signal.cs. Then runs the Capri Signal self-test and rebuilds Capri-Setup.exe.
 # Output: <repo>\Capri.exe, <repo>\Capri-Setup.exe, log in signal\build-windows-log.txt
+param([switch]$SkipSelfTest)
 $ErrorActionPreference = 'Stop'
 $dir = Split-Path -Parent $PSScriptRoot
 $log = Join-Path $PSScriptRoot 'build-windows-log.txt'
@@ -38,9 +39,17 @@ Log ">>> Build OK"
 
 Log ">>> Running Capri Signal self-test..."
 $st = Join-Path $PSScriptRoot 'selftest-windows'
-$p = Start-Process -FilePath $tmp -ArgumentList @('--signal-selftest', "`"$st`"") -PassThru -Wait
-Get-Content (Join-Path $st 'signal-selftest.txt') -ErrorAction SilentlyContinue | ForEach-Object { Log $_ }
-if ($p.ExitCode -ne 0) { Log ">>> SELF-TEST FAILED. Capri.exe was NOT replaced (new build kept as Capri.new.exe)."; exit 1 }
+if ($SkipSelfTest) { Log ">>> Self-test SKIPPED (-SkipSelfTest)." }
+else {
+    try { $p = Start-Process -FilePath $tmp -ArgumentList @('--signal-selftest', "`"$st`"") -PassThru -Wait }
+    catch {
+        Log ">>> Windows blocked the new build from running (Smart App Control / App Control): $($_.Exception.Message)"
+        Log ">>> Nothing was replaced. Wait a minute and run the build again, or run Build-CapriWindows-NoTest.cmd to install without the self-test."
+        exit 1
+    }
+    Get-Content (Join-Path $st 'signal-selftest.txt') -ErrorAction SilentlyContinue | ForEach-Object { Log $_ }
+    if ($p.ExitCode -ne 0) { Log ">>> SELF-TEST FAILED. Capri.exe was NOT replaced (new build kept as Capri.new.exe)."; exit 1 }
+}
 
 if (Test-Path $out) { Copy-Item $out (Join-Path $dir 'Capri.previous.exe') -Force }
 Move-Item $tmp $out -Force
