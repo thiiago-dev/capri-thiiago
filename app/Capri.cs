@@ -26,6 +26,7 @@ namespace CapriDesktop
             try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch (EntryPointNotFoundException) { Native.SetProcessDPIAware(); }
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+            if (args.Length >= 1 && args[0] == "--signal-selftest") return SignalSelfTest.Run(args.Length >= 2 ? args[1] : null);
             bool smoke = args.Length == 2 && args[0] == "--smoke-test";
             string identity = WindowsIdentity.GetCurrent().User.Value;
             bool first;
@@ -213,7 +214,7 @@ namespace CapriDesktop
             Uri uri;
             if (!Uri.TryCreate(address, UriKind.Absolute, out uri) || uri.UserInfo.Length != 0 || uri.Fragment.Length != 0) throw new BrainException("The update download address is invalid.");
             if (local && uri.IsLoopback && uri.Scheme == Uri.UriSchemeHttp) return uri;
-            if (uri.Scheme != Uri.UriSchemeHttps || !uri.IsDefaultPort || uri.Host != "github.com" || !uri.AbsolutePath.StartsWith("/lachydotmcg/capri-desktop/releases/download/", StringComparison.Ordinal)) throw new BrainException("The update download address is invalid.");
+            if (uri.Scheme != Uri.UriSchemeHttps || !uri.IsDefaultPort || uri.Host != "github.com" || !uri.AbsolutePath.StartsWith("/thiiago-dev/capri-thiiago/releases/download/", StringComparison.Ordinal)) throw new BrainException("The update download address is invalid.");
             return uri;
         }
 
@@ -466,6 +467,9 @@ namespace CapriDesktop
         private double replyDone = -1;
         private double pillUntil = 10;
         private int asking;
+        private SignalHub agentSignal;
+        private Lockdown lockdown;
+        private ToolStripMenuItem agentSignalItem;
         private bool finding;
         internal Func<string, string> Think;
         internal Func<string, byte[]> Speak;
@@ -604,8 +608,20 @@ namespace CapriDesktop
             checkItem = new ToolStripMenuItem("Check for updates", null, delegate { CheckForUpdates(true); });
             helpItem.DropDownItems.Add(checkItem);
             updateItem = new ToolStripMenuItem("Restart to update", null, delegate { InstallUpdate(); });
+            ToolStripMenuItem agentMenu = new ToolStripMenuItem("Agent alerts");
+            agentSignalItem = new ToolStripMenuItem("Tell me when agents finish", null, delegate { if (agentSignal == null) return; agentSignal.SetEnabled(!agentSignal.Settings.Enabled); agentSignalItem.Checked = agentSignal.Settings.Enabled; });
+            agentMenu.DropDownItems.Add(agentSignalItem);
+            ToolStripMenuItem agentSpanish = new ToolStripMenuItem("Speak Spanish");
+            agentSpanish.Click += delegate { if (agentSignal == null) return; agentSignal.SetSpanish(!agentSignal.Spanish); agentSpanish.Checked = agentSignal.Spanish; };
+            agentMenu.DropDownOpening += delegate { agentSpanish.Checked = agentSignal != null && agentSignal.Spanish; agentSignalItem.Checked = agentSignal != null && agentSignal.Settings.Enabled; };
+            agentMenu.DropDownItems.Add(agentSpanish);
+            agentMenu.DropDownItems.Add(new ToolStripMenuItem("Test: agent finished", null, delegate { if (agentSignal != null) agentSignal.Test(SignalKind.TurnEnded); }));
+            agentMenu.DropDownItems.Add(new ToolStripMenuItem("Test: agent needs you", null, delegate { if (agentSignal != null) agentSignal.Test(SignalKind.PermissionRequired); }));
+            menu.Items.Add(agentMenu);
+            menu.Opening += delegate(object sender, System.ComponentModel.CancelEventArgs args) { if (lockdown != null && lockdown.Active) args.Cancel = true; };
+            menu.Items.Add(new ToolStripMenuItem("Lockdown (guard my PC)", null, delegate { StartLockdown(); }));
             menu.Items.Add(helpItem);
-            foreach (ToolStripMenuItem parent in new[] { sizes, moves, helpItem })
+            foreach (ToolStripMenuItem parent in new[] { sizes, moves, agentMenu, helpItem })
             {
                 ToolStripDropDownMenu drop = (ToolStripDropDownMenu)parent.DropDown;
                 drop.Renderer = menu.Renderer;
@@ -666,6 +682,7 @@ namespace CapriDesktop
                 if (!testing) CheckDoomScroll(clock.Elapsed.TotalSeconds, Native.IdleMilliseconds());
                 if (!testing) CheckGlance(clock.Elapsed.TotalSeconds, Native.IdleMilliseconds());
                 if (!testing) CheckWander(clock.Elapsed.TotalSeconds, Native.IdleMilliseconds());
+                if (!testing) CheckAgentSignal();
                 StayOnTop();
                 CheckSeat(clock.Elapsed.TotalSeconds);
                 CheckChat(clock.Elapsed.TotalSeconds);
@@ -675,6 +692,12 @@ namespace CapriDesktop
                 if (!testing && UpdateDue(preferences.UpdateCheckedAt, DateTime.UtcNow.Ticks, clock.Elapsed.TotalSeconds, updateStarted)) CheckForUpdates(false);
             };
             signals.Start();
+            if (!testing)
+            {
+                try { agentSignal = new SignalHub(SignalSettings.DefaultFolder()); agentSignal.Start(); }
+                catch (Exception) { agentSignal = null; }
+                if (agentSignalItem != null) agentSignalItem.Checked = agentSignal != null && agentSignal.Settings.Enabled;
+            }
             Size = CanvasSize(preferences.Size);
             Rectangle work = Screen.PrimaryScreen.WorkingArea;
             anchor = preferences.HasPosition ? new Point(preferences.X, preferences.Y) : new Point(work.Right - Width - 28, work.Bottom - Height - 12);
@@ -816,7 +839,7 @@ namespace CapriDesktop
         internal static Release FetchLatestRelease()
         {
             ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072;
-            HttpWebRequest request = (HttpWebRequest)WebRequest.Create("https://api.github.com/repos/lachydotmcg/capri-desktop/releases/latest");
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create("https://api.github.com/repos/thiiago-dev/capri-thiiago/releases/latest");
             request.UserAgent = "Capri-Desktop";
             request.Accept = "application/vnd.github+json";
             request.Timeout = 10000;
@@ -988,6 +1011,7 @@ namespace CapriDesktop
         {
             base.OnMouseDown(e);
             if (e.Button != MouseButtons.Left) return;
+            if (lockdown != null && lockdown.Active) return; // no dragging / riding during lockdown
             pressed = true;
             dragging = false;
             pointerStart = Cursor.Position;
@@ -1014,6 +1038,12 @@ namespace CapriDesktop
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
+            if (lockdown != null && lockdown.Active)
+            {
+                pressed = false; dragging = false; pendingClick = false;
+                if (e.Button == MouseButtons.Left) CountUnlockClick();
+                return;
+            }
             if (e.Button == MouseButtons.Right) { menu.Show(Cursor.Position); return; }
             if (e.Button != MouseButtons.Left || !pressed) return;
             pressed = false;
@@ -1081,6 +1111,7 @@ namespace CapriDesktop
 
         private void StartRide()
         {
+            if (lockdown != null && lockdown.Active) return;
             if (riding || hidden || !IsHandleCreated) return;
             pendingClick = false;
             clickDelay.Stop();
@@ -2027,9 +2058,9 @@ namespace CapriDesktop
             Job waiting = job;
             if (waiting == null || !waiting.Asking) return null;
             string said = text.Trim();
-            if (Regex.IsMatch(said, @"^(yes|yeah|yep|yup|ya|yea|sure|ok|okay|do it|go ahead|go for it|send it|press it|oui)\b[\s.!,]*(please|pls|plz|choom)?[\s.!]*$", RegexOptions.IgnoreCase)) return Work(waiting);
+            if (Regex.IsMatch(said, @"^(yes|yeah|yep|yup|ya|yea|sure|ok|okay|do it|go ahead|go for it|send it|press it|oui|s[i\u00ed]|vale|dale|hazlo|adelante|claro|venga|ejec[u\u00fa]talo|m[u\u00fa]evelo|reempl[a\u00e1]zalo)\b[\s.!,]*(please|pls|plz|choom)?[\s.!]*$", RegexOptions.IgnoreCase)) return Work(waiting);
             job = null;
-            if (Regex.IsMatch(said, @"^(no|nah|nope|don't|do not|stop|cancel|never mind|nevermind|leave it|non)\b", RegexOptions.IgnoreCase)) return "Okay, I left it alone.";
+            if (Regex.IsMatch(said, @"^(no|nah|nope|don't|do not|stop|cancel|never mind|nevermind|leave it|non|para|cancela|d[e\u00e9]jalo|mejor no)\b", RegexOptions.IgnoreCase)) return "Okay, I left it alone.";
             return null;
         }
 
@@ -2037,13 +2068,45 @@ namespace CapriDesktop
         {
             job = running;
             running.Think = delegate(string system, string user, System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<string, ToolArguments>> calls) { return brain.Step(system, user, Computer.Tools, Computer.ClaudeTools, Computer.Listing, calls); };
+            running.Seeing = delegate(string system, string user, byte[] shot, System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<string, ToolArguments>> calls) { return brain.StepSeeing(system, user, shot, Computer.Tools, Computer.ClaudeTools, Computer.Listing, calls); };
             running.Progress = delegate(string status) { Post(delegate { working = status + " Esc stops me."; UpdateTalk(clock.Elapsed.TotalSeconds); }); };
-            Post(delegate { working = "On it. Esc stops me."; if (typer.Visible) typer.Hide(); PassThrough(true); UpdateTalk(clock.Elapsed.TotalSeconds); });
+            Post(delegate { working = "On it. Esc stops me."; if (typer.Visible) typer.Hide(); PassThrough(true); JobRide(true); AgentShot.HideFromCapture(new[] { Handle, box.Handle, pill.Handle }, true); UpdateTalk(clock.Elapsed.TotalSeconds); });
             try { return running.Run(); }
             finally
             {
                 if (job == running && !running.Asking) job = null;
-                Post(delegate { working = null; PassThrough(false); });
+                Post(delegate { working = null; AgentShot.HideFromCapture(new[] { Handle, box.Handle, pill.Handle }, false); JobRide(false); PassThrough(false); });
+            }
+        }
+
+        private bool jobRiding;
+
+        /// <summary>While she works, Capri rides the cursor so you can see her driving. Click-through, so she never blocks a click.</summary>
+        private void JobRide(bool on)
+        {
+            if (on)
+            {
+                if (riding || hidden || !IsHandleCreated || (lockdown != null && lockdown.Active)) return;
+                jobRiding = true;
+                pendingClick = false;
+                clickDelay.Stop();
+                pressed = false;
+                dragging = false;
+                Capture = false;
+                seat = null;
+                falling = false;
+                hanging = false;
+                riding = true;
+                Native.SetWindowLong(Handle, -20, Native.GetWindowLong(Handle, -20) | 0x20);
+                Play(perchGlitch);
+                frames.Start();
+                pill.Hide();
+            }
+            else
+            {
+                if (!jobRiding) return;
+                jobRiding = false;
+                StopRide();
             }
         }
 
@@ -2288,6 +2351,55 @@ namespace CapriDesktop
             heard = shown;
             box.Prompt = "> sys: ";
             Answer(++asking, line, TalkState.Talking);
+        }
+
+        /// <summary>Lockdown: full-screen ICE, keyboard blocked until the 4-digit code. Click Capri = emergency exit.</summary>
+        internal void StartLockdown()
+        {
+            if (lockdown != null && lockdown.Active) return;
+            LockdownCodes codes = LockdownCodes.Load();
+            if (codes == null) { Tell("lockdown", "I can't lock anything yet, choom. There's no lockdown code set up on this rig."); return; }
+            if (hidden) SetHidden(false);
+            if (riding) StopRide();
+            if (hanging) LetGo();
+            CloseTalk();
+            if (typer.Visible) typer.Hide();
+            lockdown = new Lockdown(codes, delegate(bool emergency)
+            {
+                if (emergency) TellAlert("LOCKDOWN LIFTED", "Emergency override accepted. ICE is down, choom.");
+                else Tell("lockdown lifted", "Code accepted. Welcome back, choom. Your rig stayed clean.");
+            }, delegate { return new IntPtr[] { Handle, box.Visible ? box.Handle : IntPtr.Zero, pill.Visible ? pill.Handle : IntPtr.Zero }; });
+            lockdown.Start();
+            TellAlert("LOCKDOWN", "ICE is up. Nobody touches this rig without the code, choom.");
+        }
+
+        private long[] unlockClicks = new long[3];
+        private int unlockIndex;
+
+        /// <summary>Lockdown: three quick left clicks on Capri (within 1.2 s) = manual emergency unlock. Nothing is shown.</summary>
+        private void CountUnlockClick()
+        {
+            long now = clock.ElapsedMilliseconds;
+            unlockClicks[unlockIndex % 3] = now;
+            unlockIndex++;
+            if (unlockIndex < 3) return;
+            long oldest = unlockClicks[unlockIndex % 3];
+            if (now - oldest <= 1200) { unlockIndex = 0; if (lockdown != null) lockdown.Unlock(true); }
+        }
+
+        /// <summary>Capri Signal: says the next queued agent alert when she isn't busy with you.</summary>
+        private void CheckAgentSignal()
+        {
+            if (agentSignal == null) return;
+            agentSignal.PollInbox();
+            if (!agentSignal.Waiting) return;
+            if (dragging || chatting || typer.Visible || talkState == TalkState.Thinking) return;
+            bool idle = talkState == TalkState.Off;
+            if (!idle && (replyDone < 0 || !agentSignal.HasAlert)) return; // only urgent alerts may follow a finished reply
+            SignalLine peek = agentSignal.Next();
+            if (peek == null) return;
+            if (peek.Alert) TellAlert(peek.Shown.ToUpperInvariant(), peek.Said);
+            else Tell(peek.Shown, peek.Said);
         }
 
         private void TellAlert(string shown, string line)
@@ -2968,6 +3080,7 @@ namespace CapriDesktop
             box.Prompt = prompt;
             string blocked = Safety.Screen(text);
             if (blocked != null) { Answer(ticket, blocked, TalkState.Talking); return; }
+            if (LockdownWords.Asked(text)) { StartLockdown(); return; }
             Func<string, string> think = Think;
             bool liveSight = (preferences.LiveSight || Hands.AskingToLook(text)) && think == null;
             byte[] screenShot = null;
@@ -3294,6 +3407,8 @@ namespace CapriDesktop
         {
             if (disposing)
             {
+                if (agentSignal != null) agentSignal.Stop();
+                if (lockdown != null) lockdown.Dispose();
                 clickDelay.Dispose();
                 frames.Dispose();
                 signals.Dispose();
@@ -3610,7 +3725,7 @@ namespace CapriDesktop
                             if (!UpdateDue(0, now) || UpdateDue(now - 3 * TimeSpan.TicksPerHour + 1, now) || !UpdateDue(now - 3 * TimeSpan.TicksPerHour, now) || !UpdateDue(now + 1, now) || UpdateDue(now, now, 19.9, false) || !UpdateDue(now, now, 20, false) || UpdateDue(now, now, 20, true)) throw new Exception("Three-hour or startup update timing failed.");
                             checks.Add("PASS update versions, three-hour boundary, startup check and clock rollback");
                             Release release;
-                            using (MemoryStream sample = new MemoryStream(System.Text.Encoding.UTF8.GetBytes("{\"tag_name\":\"v9.0.0\",\"draft\":false,\"prerelease\":false,\"assets\":[{\"id\":1,\"name\":\"Capri.exe\"},{\"id\":2,\"name\":\"Capri-Setup.exe\"},{\"id\":3,\"name\":\"Capri-Setup-9.0.0.exe\",\"size\":10,\"browser_download_url\":\"https://github.com/lachydotmcg/capri-desktop/releases/download/v9.0.0/Capri-Setup-9.0.0.exe\"},{\"id\":4,\"name\":\"SHA256SUMS.txt\"}]}"))) release = ParseRelease(sample);
+                            using (MemoryStream sample = new MemoryStream(System.Text.Encoding.UTF8.GetBytes("{\"tag_name\":\"v9.0.0\",\"draft\":false,\"prerelease\":false,\"assets\":[{\"id\":1,\"name\":\"Capri.exe\"},{\"id\":2,\"name\":\"Capri-Setup.exe\"},{\"id\":3,\"name\":\"Capri-Setup-9.0.0.exe\",\"size\":10,\"browser_download_url\":\"https://github.com/thiiago-dev/capri-thiiago/releases/download/v9.0.0/Capri-Setup-9.0.0.exe\"},{\"id\":4,\"name\":\"SHA256SUMS.txt\"}]}"))) release = ParseRelease(sample);
                             ReleaseAsset installer = Updater.Installer(release);
                             ReleaseAsset sums = release.Assets[3];
                             if (installer != release.Assets[2] || installer.Size != 10 || installer.Url == null || Updater.Installer(new Release { Assets = new[] { release.Assets[0], release.Assets[1] } }) != release.Assets[1] || Updater.Installer(new Release { Assets = new[] { new ReleaseAsset { Name = "Capri-Setup-other.exe" } } }) == null || Updater.Installer(new Release { Assets = new[] { release.Assets[0], new ReleaseAsset { Name = "Capri-Setup.exe.zip" }, new ReleaseAsset { Name = "Capri-Setup/evil.exe" } } }) != null) throw new Exception("Installer asset picking failed.");
@@ -3623,7 +3738,7 @@ namespace CapriDesktop
                             release.Assets = new[] { installer, sums };
                             checks.Add("PASS release assets: plain and versioned setup names, executable filter, draft and prerelease rejection");
                             string assetAddress = installer.Url;
-                            foreach (string badAddress in new[] { "file:///Capri-Setup.exe", "http://github.com/lachydotmcg/capri-desktop/releases/download/v9/Capri-Setup.exe", "https://github.com.example.com/lachydotmcg/capri-desktop/releases/download/v9/Capri-Setup.exe", "https://github.com/another/project/releases/download/v9/Capri-Setup.exe" })
+                            foreach (string badAddress in new[] { "file:///Capri-Setup.exe", "http://github.com/thiiago-dev/capri-thiiago/releases/download/v9/Capri-Setup.exe", "https://github.com.example.com/thiiago-dev/capri-thiiago/releases/download/v9/Capri-Setup.exe", "https://github.com/another/project/releases/download/v9/Capri-Setup.exe" })
                             {
                                 installer.Url = badAddress;
                                 bool rejected = false;

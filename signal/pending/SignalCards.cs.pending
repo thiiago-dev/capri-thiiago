@@ -1,0 +1,289 @@
+﻿// Capri Signal — small notification cards in the bottom-right corner (WinForms, C# 5).
+// Shown together with Capri's spoken alert. No images: placeholder until Capri's own "call" sprites exist.
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.IO;
+using System.Windows.Forms;
+
+namespace CapriDesktop
+{
+    internal sealed class SignalCard : Form
+    {
+        internal const int BaseWidth = 340;
+        private readonly SignalCards owner;
+        internal SignalEvent Event;
+        internal int Count = 1;
+        internal DateTime Updated = DateTime.UtcNow;
+        internal bool Expanded;
+        private readonly float scale;
+        private Rectangle viewButton, openButton, closeButton;
+        private int hover = -1;
+
+        internal SignalCard(SignalCards owner, SignalEvent e)
+        {
+            this.owner = owner;
+            Event = e;
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            TopMost = true;
+            StartPosition = FormStartPosition.Manual;
+            BackColor = Look.Panel;
+            DoubleBuffered = true;
+            using (Graphics g = CreateGraphics()) scale = Math.Max(1f, g.DpiX / 96f);
+            Cursor = Cursors.Default;
+            Relayout();
+        }
+
+        protected override bool ShowWithoutActivation { get { return true; } }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams value = base.CreateParams;
+                value.ExStyle |= 0x00000080 | 0x08000000; // tool window, no-activate
+                return value;
+            }
+        }
+
+        internal bool Sticky { get { return Event.Urgent; } }
+
+        internal static Color Accent(SignalKind kind)
+        {
+            switch (kind)
+            {
+                case SignalKind.NeedsInput:
+                case SignalKind.PermissionRequired: return Color.FromArgb(255, 46, 196);
+                case SignalKind.Failed: return Look.Red;
+                case SignalKind.Started: return Look.Dim;
+                default: return Look.Cyan;
+            }
+        }
+
+        private string Label()
+        {
+            bool es = owner.Spanish;
+            switch (Event.Kind)
+            {
+                case SignalKind.Started: return es ? "› EN CURSO" : "› STARTED";
+                case SignalKind.TurnEnded: return es ? "✓ TURNO TERMINADO" : "✓ TURN FINISHED";
+                case SignalKind.Completed: return es ? "✓ TAREA COMPLETADA" : "✓ TASK COMPLETE";
+                case SignalKind.NeedsInput: return es ? "? ESPERA TU RESPUESTA" : "? WAITING FOR YOU";
+                case SignalKind.PermissionRequired: return es ? "! PIDE PERMISO" : "! NEEDS PERMISSION";
+                default: return es ? "× ERROR" : "× ERROR";
+            }
+        }
+
+        private string Body()
+        {
+            bool es = owner.Spanish;
+            string text = Event.Message;
+            if (text == null)
+            {
+                switch (Event.Kind)
+                {
+                    case SignalKind.NeedsInput: text = es ? "El agente espera tu respuesta." : "The agent is waiting for your answer."; break;
+                    case SignalKind.PermissionRequired: text = es ? "El agente necesita que autorices una acción." : "The agent needs you to approve an action."; break;
+                    case SignalKind.Failed: text = es ? "Revisa el error." : "Check the error."; break;
+                    case SignalKind.Started: text = es ? "Trabajando…" : "Working…"; break;
+                    default: text = es ? "Revisa el resultado: fin de turno no garantiza que funcione." : "Check the result: a finished turn doesn't mean it works."; break;
+                }
+            }
+            if (Expanded)
+            {
+                if (Event.Detail != null) text += "\n" + (es ? "tipo: " : "type: ") + Event.Detail;
+                if (Event.ProjectPath != null) text += "\n" + (es ? "ruta: " : "path: ") + Event.ProjectPath;
+                text += "\n" + (es ? "recibido: " : "received: ") + Updated.ToLocalTime().ToString("HH:mm:ss");
+            }
+            return text;
+        }
+
+        private int S(float v) { return (int)Math.Round(v * scale); }
+
+        internal void Relayout()
+        {
+            int width = S(BaseWidth);
+            int bodyHeight;
+            using (Graphics g = CreateGraphics())
+            using (Font f = Look.Mono(S(13), FontStyle.Regular))
+            {
+                SizeF measured = g.MeasureString(Body(), f, width - S(32));
+                int maxBody = Expanded ? S(200) : S(36);
+                bodyHeight = Math.Min(maxBody, (int)Math.Ceiling(measured.Height));
+            }
+            Size = new Size(width, S(66) + bodyHeight + S(34));
+            Invalidate();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+            Color accent = Accent(Event.Kind);
+            Rectangle box = new Rectangle(0, 0, Width - 1, Height - 1);
+            using (SolidBrush bg = new SolidBrush(Look.Panel)) g.FillRectangle(bg, box);
+            using (Pen scan = new Pen(Color.FromArgb(9, 255, 255, 255))) for (int y = 0; y < Height; y += 3) g.DrawLine(scan, 0, y, Width, y);
+            using (Pen border = new Pen(Color.FromArgb(owner.Pulse && Sticky ? 255 : 190, accent), Math.Max(1.5f, 1.5f * scale))) g.DrawRectangle(border, box);
+            using (SolidBrush bar = new SolidBrush(accent)) g.FillRectangle(bar, S(8), S(10), S(3), Height - S(20));
+            int x = S(20);
+            using (Font small = Look.Mono(S(12), FontStyle.Bold))
+            using (Font tiny = Look.Mono(S(11), FontStyle.Regular))
+            using (Font title = Look.Mono(S(15), FontStyle.Regular))
+            using (Font body = Look.Mono(S(13), FontStyle.Regular))
+            using (SolidBrush accentBrush = new SolidBrush(accent))
+            using (SolidBrush dim = new SolidBrush(Look.Dim))
+            using (SolidBrush ink = new SolidBrush(Look.Ink))
+            using (SolidBrush neon = new SolidBrush(Look.Neon))
+            {
+                g.DrawString(Label(), small, accentBrush, x, S(10));
+                string time = Updated.ToLocalTime().ToString("HH:mm") + (Count > 1 ? "  ×" + Count : "");
+                SizeF tw = g.MeasureString(time, tiny);
+                g.DrawString(time, tiny, dim, Width - S(12) - tw.Width, S(11));
+                string head = SignalAdapters.Display(Event.Source, owner.Spanish) + (Event.Project != null ? "  ·  " + Event.Project : "");
+                StringFormat ellipsis = new StringFormat { Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap };
+                g.DrawString(head, title, ink, new RectangleF(x, S(30), Width - x - S(12), S(22)), ellipsis);
+                StringFormat wrap = new StringFormat { Trimming = StringTrimming.EllipsisWord };
+                g.DrawString(Body(), body, neon, new RectangleF(x, S(56), Width - x - S(14), Height - S(56) - S(36)), wrap);
+
+                bool es = owner.Spanish;
+                int bx = Width - S(12);
+                closeButton = Button(g, tiny, es ? "DESCARTAR" : "DISMISS", accent, ref bx, 2);
+                openButton = CanOpen(Event.ProjectPath) ? Button(g, tiny, es ? "ABRIR CARPETA" : "OPEN FOLDER", Look.Cyan, ref bx, 1) : Rectangle.Empty;
+                viewButton = Button(g, tiny, Expanded ? (es ? "OCULTAR" : "LESS") : (es ? "VER" : "VIEW"), Look.Cyan, ref bx, 0);
+            }
+        }
+
+        private Rectangle Button(Graphics g, Font font, string text, Color colour, ref int right, int id)
+        {
+            SizeF size = g.MeasureString(text, font);
+            int w = (int)size.Width + S(14), h = S(22);
+            Rectangle r = new Rectangle(right - w, Height - S(10) - h, w, h);
+            right = r.Left - S(8);
+            using (SolidBrush fill = new SolidBrush(Color.FromArgb(hover == id ? 70 : 30, colour))) g.FillRectangle(fill, r);
+            using (Pen p = new Pen(Color.FromArgb(160, colour))) g.DrawRectangle(p, r);
+            using (SolidBrush b = new SolidBrush(colour)) g.DrawString(text, font, b, r.Left + S(7), r.Top + (h - size.Height) / 2);
+            return r;
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            int was = hover;
+            hover = viewButton.Contains(e.Location) ? 0 : openButton.Contains(e.Location) ? 1 : closeButton.Contains(e.Location) ? 2 : -1;
+            Cursor = hover >= 0 ? Cursors.Hand : Cursors.Default;
+            if (was != hover) Invalidate();
+        }
+
+        protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); if (hover != -1) { hover = -1; Invalidate(); } }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (e.Button != MouseButtons.Left) return;
+            if (closeButton.Contains(e.Location)) owner.Dismiss(this);
+            else if (openButton.Contains(e.Location)) Open(Event.ProjectPath);
+            else if (viewButton.Contains(e.Location)) { Expanded = !Expanded; Relayout(); owner.Arrange(); }
+        }
+
+        internal static bool CanOpen(string path)
+        {
+            try { return !string.IsNullOrEmpty(path) && Path.IsPathRooted(path) && path.IndexOfAny(Path.GetInvalidPathChars()) < 0 && Directory.Exists(path); }
+            catch (Exception) { return false; }
+        }
+
+        /// <summary>Opens the project folder in Explorer. Only an existing local directory is passed — never a command.</summary>
+        internal static void Open(string path)
+        {
+            if (!CanOpen(path)) return;
+            try { Process.Start(new ProcessStartInfo("explorer.exe", "\"" + Path.GetFullPath(path) + "\"") { UseShellExecute = false }); }
+            catch (Exception) { }
+        }
+    }
+
+    /// <summary>Stack of cards, bottom-right of the primary screen. UI thread only.</summary>
+    internal sealed class SignalCards : IDisposable
+    {
+        internal const int MaxVisible = 3;
+        internal const double AutoHideSeconds = 25;
+        private readonly List<SignalCard> cards = new List<SignalCard>();
+        private readonly Func<bool> spanish;
+        internal bool Pulse;
+        private DateTime nextPulse = DateTime.MinValue;
+
+        internal SignalCards(Func<bool> spanish) { this.spanish = spanish; }
+
+        internal bool Spanish { get { return spanish(); } }
+
+        internal void Show(SignalEvent e)
+        {
+            SignalCard card = null;
+            foreach (SignalCard c in cards) if (c.Event.ThreadKey == e.ThreadKey) card = c;
+            if (card != null)
+            {
+                if (SignalEvent.Priority(e.Kind) >= SignalEvent.Priority(card.Event.Kind) || !card.Sticky) card.Event = e;
+                card.Count++;
+                card.Updated = DateTime.UtcNow;
+                card.Relayout();
+            }
+            else
+            {
+                card = new SignalCard(this, e);
+                cards.Add(card);
+                while (cards.Count > MaxVisible)
+                {
+                    SignalCard oldest = null;
+                    foreach (SignalCard c in cards) if (oldest == null || SignalEvent.Priority(c.Event.Kind) < SignalEvent.Priority(oldest.Event.Kind) || (SignalEvent.Priority(c.Event.Kind) == SignalEvent.Priority(oldest.Event.Kind) && c.Updated < oldest.Updated)) oldest = c;
+                    Dismiss(oldest);
+                }
+            }
+            Arrange();
+            if (!card.Visible) card.Show();
+            card.Invalidate();
+        }
+
+        internal void Dismiss(SignalCard card)
+        {
+            if (card == null || !cards.Remove(card)) return;
+            card.Close();
+            card.Dispose();
+            Arrange();
+        }
+
+        internal void DismissAll() { foreach (SignalCard c in cards.ToArray()) Dismiss(c); }
+
+        /// <summary>Called from Capri's 250 ms timer: auto-hide finished turns, pulse cards that need you.</summary>
+        internal void Tick()
+        {
+            DateTime now = DateTime.UtcNow;
+            foreach (SignalCard c in cards.ToArray()) if (!c.Sticky && (now - c.Updated).TotalSeconds >= AutoHideSeconds) Dismiss(c);
+            if (now < nextPulse) return;
+            nextPulse = now.AddMilliseconds(700);
+            Pulse = !Pulse;
+            foreach (SignalCard c in cards) if (c.Sticky) c.Invalidate();
+        }
+
+        internal void Arrange()
+        {
+            Rectangle work = Screen.PrimaryScreen.WorkingArea;
+            int y = work.Bottom - 12;
+            List<SignalCard> ordered = new List<SignalCard>(cards);
+            ordered.Sort(delegate(SignalCard a, SignalCard b)
+            {
+                int p = SignalEvent.Priority(a.Event.Kind).CompareTo(SignalEvent.Priority(b.Event.Kind));
+                return p != 0 ? p : a.Updated.CompareTo(b.Updated);
+            });
+            foreach (SignalCard c in ordered)
+            {
+                y -= c.Height;
+                c.Location = new Point(work.Right - c.Width - 12, y);
+                y -= 10;
+            }
+        }
+
+        public void Dispose() { DismissAll(); }
+    }
+}
