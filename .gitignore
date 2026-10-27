@@ -22,3 +22,5 @@ signal/build-log.txt
 signal/test-results.txt
 signal/run-target.txt
 signal/push-log.txt
+signal/selftest-windows/
+signal/build-windows-log.txt

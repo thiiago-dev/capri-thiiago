@@ -26,6 +26,7 @@ namespace CapriDesktop
             try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch (EntryPointNotFoundException) { Native.SetProcessDPIAware(); }
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+            if (args.Length >= 1 && args[0] == "--signal-selftest") return SignalSelfTest.Run(args.Length >= 2 ? args[1] : null);
             bool smoke = args.Length == 2 && args[0] == "--smoke-test";
             string identity = WindowsIdentity.GetCurrent().User.Value;
             bool first;
@@ -213,7 +214,7 @@ namespace CapriDesktop
             Uri uri;
             if (!Uri.TryCreate(address, UriKind.Absolute, out uri) || uri.UserInfo.Length != 0 || uri.Fragment.Length != 0) throw new BrainException("The update download address is invalid.");
             if (local && uri.IsLoopback && uri.Scheme == Uri.UriSchemeHttp) return uri;
-            if (uri.Scheme != Uri.UriSchemeHttps || !uri.IsDefaultPort || uri.Host != "github.com" || !uri.AbsolutePath.StartsWith("/lachydotmcg/capri-desktop/releases/download/", StringComparison.Ordinal)) throw new BrainException("The update download address is invalid.");
+            if (uri.Scheme != Uri.UriSchemeHttps || !uri.IsDefaultPort || uri.Host != "github.com" || !uri.AbsolutePath.StartsWith("/thiiago-dev/capri-thiiago/releases/download/", StringComparison.Ordinal)) throw new BrainException("The update download address is invalid.");
             return uri;
         }
 
@@ -466,6 +467,8 @@ namespace CapriDesktop
         private double replyDone = -1;
         private double pillUntil = 10;
         private int asking;
+        private SignalHub agentSignal;
+        private ToolStripMenuItem agentSignalItem;
         private bool finding;
         internal Func<string, string> Think;
         internal Func<string, byte[]> Speak;
@@ -604,8 +607,18 @@ namespace CapriDesktop
             checkItem = new ToolStripMenuItem("Check for updates", null, delegate { CheckForUpdates(true); });
             helpItem.DropDownItems.Add(checkItem);
             updateItem = new ToolStripMenuItem("Restart to update", null, delegate { InstallUpdate(); });
+            ToolStripMenuItem agentMenu = new ToolStripMenuItem("Agent alerts");
+            agentSignalItem = new ToolStripMenuItem("Tell me when agents finish", null, delegate { if (agentSignal == null) return; agentSignal.SetEnabled(!agentSignal.Settings.Enabled); agentSignalItem.Checked = agentSignal.Settings.Enabled; });
+            agentMenu.DropDownItems.Add(agentSignalItem);
+            ToolStripMenuItem agentSpanish = new ToolStripMenuItem("Speak Spanish");
+            agentSpanish.Click += delegate { if (agentSignal == null) return; agentSignal.SetSpanish(!agentSignal.Spanish); agentSpanish.Checked = agentSignal.Spanish; };
+            agentMenu.DropDownOpening += delegate { agentSpanish.Checked = agentSignal != null && agentSignal.Spanish; agentSignalItem.Checked = agentSignal != null && agentSignal.Settings.Enabled; };
+            agentMenu.DropDownItems.Add(agentSpanish);
+            agentMenu.DropDownItems.Add(new ToolStripMenuItem("Test: agent finished", null, delegate { if (agentSignal != null) agentSignal.Test(SignalKind.TurnEnded); }));
+            agentMenu.DropDownItems.Add(new ToolStripMenuItem("Test: agent needs you", null, delegate { if (agentSignal != null) agentSignal.Test(SignalKind.PermissionRequired); }));
+            menu.Items.Add(agentMenu);
             menu.Items.Add(helpItem);
-            foreach (ToolStripMenuItem parent in new[] { sizes, moves, helpItem })
+            foreach (ToolStripMenuItem parent in new[] { sizes, moves, agentMenu, helpItem })
             {
                 ToolStripDropDownMenu drop = (ToolStripDropDownMenu)parent.DropDown;
                 drop.Renderer = menu.Renderer;
@@ -666,6 +679,7 @@ namespace CapriDesktop
                 if (!testing) CheckDoomScroll(clock.Elapsed.TotalSeconds, Native.IdleMilliseconds());
                 if (!testing) CheckGlance(clock.Elapsed.TotalSeconds, Native.IdleMilliseconds());
                 if (!testing) CheckWander(clock.Elapsed.TotalSeconds, Native.IdleMilliseconds());
+                if (!testing) CheckAgentSignal();
                 StayOnTop();
                 CheckSeat(clock.Elapsed.TotalSeconds);
                 CheckChat(clock.Elapsed.TotalSeconds);
@@ -675,6 +689,12 @@ namespace CapriDesktop
                 if (!testing && UpdateDue(preferences.UpdateCheckedAt, DateTime.UtcNow.Ticks, clock.Elapsed.TotalSeconds, updateStarted)) CheckForUpdates(false);
             };
             signals.Start();
+            if (!testing)
+            {
+                try { agentSignal = new SignalHub(SignalSettings.DefaultFolder()); agentSignal.Start(); }
+                catch (Exception) { agentSignal = null; }
+                if (agentSignalItem != null) agentSignalItem.Checked = agentSignal != null && agentSignal.Settings.Enabled;
+            }
             Size = CanvasSize(preferences.Size);
             Rectangle work = Screen.PrimaryScreen.WorkingArea;
             anchor = preferences.HasPosition ? new Point(preferences.X, preferences.Y) : new Point(work.Right - Width - 28, work.Bottom - Height - 12);
@@ -816,7 +836,7 @@ namespace CapriDesktop
         internal static Release FetchLatestRelease()
         {
             ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072;
-            HttpWebRequest request = (HttpWebRequest)WebRequest.Create("https://api.github.com/repos/lachydotmcg/capri-desktop/releases/latest");
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create("https://api.github.com/repos/thiiago-dev/capri-thiiago/releases/latest");
             request.UserAgent = "Capri-Desktop";
             request.Accept = "application/vnd.github+json";
             request.Timeout = 10000;
@@ -2290,6 +2310,21 @@ namespace CapriDesktop
             Answer(++asking, line, TalkState.Talking);
         }
 
+        /// <summary>Capri Signal: says the next queued agent alert when she isn't busy with you.</summary>
+        private void CheckAgentSignal()
+        {
+            if (agentSignal == null) return;
+            agentSignal.PollInbox();
+            if (!agentSignal.Waiting) return;
+            if (dragging || chatting || typer.Visible || talkState == TalkState.Thinking) return;
+            bool idle = talkState == TalkState.Off;
+            if (!idle && (replyDone < 0 || !agentSignal.HasAlert)) return; // only urgent alerts may follow a finished reply
+            SignalLine peek = agentSignal.Next();
+            if (peek == null) return;
+            if (peek.Alert) TellAlert(peek.Shown.ToUpperInvariant(), peek.Said);
+            else Tell(peek.Shown, peek.Said);
+        }
+
         private void TellAlert(string shown, string line)
         {
             if (hidden) SetHidden(false);
@@ -3294,6 +3329,7 @@ namespace CapriDesktop
         {
             if (disposing)
             {
+                if (agentSignal != null) agentSignal.Stop();
                 clickDelay.Dispose();
                 frames.Dispose();
                 signals.Dispose();
@@ -3610,7 +3646,7 @@ namespace CapriDesktop
                             if (!UpdateDue(0, now) || UpdateDue(now - 3 * TimeSpan.TicksPerHour + 1, now) || !UpdateDue(now - 3 * TimeSpan.TicksPerHour, now) || !UpdateDue(now + 1, now) || UpdateDue(now, now, 19.9, false) || !UpdateDue(now, now, 20, false) || UpdateDue(now, now, 20, true)) throw new Exception("Three-hour or startup update timing failed.");
                             checks.Add("PASS update versions, three-hour boundary, startup check and clock rollback");
                             Release release;
-                            using (MemoryStream sample = new MemoryStream(System.Text.Encoding.UTF8.GetBytes("{\"tag_name\":\"v9.0.0\",\"draft\":false,\"prerelease\":false,\"assets\":[{\"id\":1,\"name\":\"Capri.exe\"},{\"id\":2,\"name\":\"Capri-Setup.exe\"},{\"id\":3,\"name\":\"Capri-Setup-9.0.0.exe\",\"size\":10,\"browser_download_url\":\"https://github.com/lachydotmcg/capri-desktop/releases/download/v9.0.0/Capri-Setup-9.0.0.exe\"},{\"id\":4,\"name\":\"SHA256SUMS.txt\"}]}"))) release = ParseRelease(sample);
+                            using (MemoryStream sample = new MemoryStream(System.Text.Encoding.UTF8.GetBytes("{\"tag_name\":\"v9.0.0\",\"draft\":false,\"prerelease\":false,\"assets\":[{\"id\":1,\"name\":\"Capri.exe\"},{\"id\":2,\"name\":\"Capri-Setup.exe\"},{\"id\":3,\"name\":\"Capri-Setup-9.0.0.exe\",\"size\":10,\"browser_download_url\":\"https://github.com/thiiago-dev/capri-thiiago/releases/download/v9.0.0/Capri-Setup-9.0.0.exe\"},{\"id\":4,\"name\":\"SHA256SUMS.txt\"}]}"))) release = ParseRelease(sample);
                             ReleaseAsset installer = Updater.Installer(release);
                             ReleaseAsset sums = release.Assets[3];
                             if (installer != release.Assets[2] || installer.Size != 10 || installer.Url == null || Updater.Installer(new Release { Assets = new[] { release.Assets[0], release.Assets[1] } }) != release.Assets[1] || Updater.Installer(new Release { Assets = new[] { new ReleaseAsset { Name = "Capri-Setup-other.exe" } } }) == null || Updater.Installer(new Release { Assets = new[] { release.Assets[0], new ReleaseAsset { Name = "Capri-Setup.exe.zip" }, new ReleaseAsset { Name = "Capri-Setup/evil.exe" } } }) != null) throw new Exception("Installer asset picking failed.");
@@ -3623,7 +3659,7 @@ namespace CapriDesktop
                             release.Assets = new[] { installer, sums };
                             checks.Add("PASS release assets: plain and versioned setup names, executable filter, draft and prerelease rejection");
                             string assetAddress = installer.Url;
-                            foreach (string badAddress in new[] { "file:///Capri-Setup.exe", "http://github.com/lachydotmcg/capri-desktop/releases/download/v9/Capri-Setup.exe", "https://github.com.example.com/lachydotmcg/capri-desktop/releases/download/v9/Capri-Setup.exe", "https://github.com/another/project/releases/download/v9/Capri-Setup.exe" })
+                            foreach (string badAddress in new[] { "file:///Capri-Setup.exe", "http://github.com/thiiago-dev/capri-thiiago/releases/download/v9/Capri-Setup.exe", "https://github.com.example.com/thiiago-dev/capri-thiiago/releases/download/v9/Capri-Setup.exe", "https://github.com/another/project/releases/download/v9/Capri-Setup.exe" })
                             {
                                 installer.Url = badAddress;
                                 bool rejected = false;
