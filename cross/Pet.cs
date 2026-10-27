@@ -538,6 +538,13 @@ namespace CapriDesktop
             Play(seat != null ? perchGlitch : glitch);
         }
 
+        /// <summary>Capri Signal hook: a short, existing reaction animation. Never interrupts a drag, fall or press.</summary>
+        internal void Alert()
+        {
+            if (Busy || clip == glitch || clip == perchGlitch) return;
+            React();
+        }
+
         internal void NoVoice()
         {
             Talk.Answer("(voice)", "Voice chat isn't on Mac and Linux yet. Type to me for now, choom.");

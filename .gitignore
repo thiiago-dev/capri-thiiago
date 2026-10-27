@@ -13,3 +13,12 @@ Capri.exe
 # Temporary and log files
 *.log
 failure.txt
+
+# Build output
+bin/
+obj/
+signal/selftest/
+signal/build-log.txt
+signal/test-results.txt
+signal/run-target.txt
+signal/push-log.txt
