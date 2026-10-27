@@ -468,6 +468,7 @@ namespace CapriDesktop
         private double pillUntil = 10;
         private int asking;
         private SignalHub agentSignal;
+        private Lockdown lockdown;
         private ToolStripMenuItem agentSignalItem;
         private bool finding;
         internal Func<string, string> Think;
@@ -617,6 +618,8 @@ namespace CapriDesktop
             agentMenu.DropDownItems.Add(new ToolStripMenuItem("Test: agent finished", null, delegate { if (agentSignal != null) agentSignal.Test(SignalKind.TurnEnded); }));
             agentMenu.DropDownItems.Add(new ToolStripMenuItem("Test: agent needs you", null, delegate { if (agentSignal != null) agentSignal.Test(SignalKind.PermissionRequired); }));
             menu.Items.Add(agentMenu);
+            menu.Opening += delegate(object sender, System.ComponentModel.CancelEventArgs args) { if (lockdown != null && lockdown.Active) args.Cancel = true; };
+            menu.Items.Add(new ToolStripMenuItem("Lockdown (guard my PC)", null, delegate { StartLockdown(); }));
             menu.Items.Add(helpItem);
             foreach (ToolStripMenuItem parent in new[] { sizes, moves, agentMenu, helpItem })
             {
@@ -1008,6 +1011,7 @@ namespace CapriDesktop
         {
             base.OnMouseDown(e);
             if (e.Button != MouseButtons.Left) return;
+            if (lockdown != null && lockdown.Active) return; // no dragging / riding during lockdown
             pressed = true;
             dragging = false;
             pointerStart = Cursor.Position;
@@ -1034,6 +1038,12 @@ namespace CapriDesktop
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
+            if (lockdown != null && lockdown.Active)
+            {
+                pressed = false; dragging = false; pendingClick = false;
+                if (e.Button == MouseButtons.Left) CountUnlockClick();
+                return;
+            }
             if (e.Button == MouseButtons.Right) { menu.Show(Cursor.Position); return; }
             if (e.Button != MouseButtons.Left || !pressed) return;
             pressed = false;
@@ -1101,6 +1111,7 @@ namespace CapriDesktop
 
         private void StartRide()
         {
+            if (lockdown != null && lockdown.Active) return;
             if (riding || hidden || !IsHandleCreated) return;
             pendingClick = false;
             clickDelay.Stop();
@@ -2310,6 +2321,40 @@ namespace CapriDesktop
             Answer(++asking, line, TalkState.Talking);
         }
 
+        /// <summary>Lockdown: full-screen ICE, keyboard blocked until the 4-digit code. Click Capri = emergency exit.</summary>
+        internal void StartLockdown()
+        {
+            if (lockdown != null && lockdown.Active) return;
+            LockdownCodes codes = LockdownCodes.Load();
+            if (codes == null) { Tell("lockdown", "I can't lock anything yet, choom. There's no lockdown code set up on this rig."); return; }
+            if (hidden) SetHidden(false);
+            if (riding) StopRide();
+            if (hanging) LetGo();
+            CloseTalk();
+            if (typer.Visible) typer.Hide();
+            lockdown = new Lockdown(codes, delegate(bool emergency)
+            {
+                if (emergency) TellAlert("LOCKDOWN LIFTED", "Emergency override accepted. ICE is down, choom.");
+                else Tell("lockdown lifted", "Code accepted. Welcome back, choom. Your rig stayed clean.");
+            }, delegate { return new IntPtr[] { Handle, box.Visible ? box.Handle : IntPtr.Zero, pill.Visible ? pill.Handle : IntPtr.Zero }; });
+            lockdown.Start();
+            TellAlert("LOCKDOWN", "ICE is up. Nobody touches this rig without the code, choom.");
+        }
+
+        private long[] unlockClicks = new long[3];
+        private int unlockIndex;
+
+        /// <summary>Lockdown: three quick left clicks on Capri (within 1.2 s) = manual emergency unlock. Nothing is shown.</summary>
+        private void CountUnlockClick()
+        {
+            long now = clock.ElapsedMilliseconds;
+            unlockClicks[unlockIndex % 3] = now;
+            unlockIndex++;
+            if (unlockIndex < 3) return;
+            long oldest = unlockClicks[unlockIndex % 3];
+            if (now - oldest <= 1200) { unlockIndex = 0; if (lockdown != null) lockdown.Unlock(true); }
+        }
+
         /// <summary>Capri Signal: says the next queued agent alert when she isn't busy with you.</summary>
         private void CheckAgentSignal()
         {
@@ -3003,6 +3048,7 @@ namespace CapriDesktop
             box.Prompt = prompt;
             string blocked = Safety.Screen(text);
             if (blocked != null) { Answer(ticket, blocked, TalkState.Talking); return; }
+            if (LockdownWords.Asked(text)) { StartLockdown(); return; }
             Func<string, string> think = Think;
             bool liveSight = (preferences.LiveSight || Hands.AskingToLook(text)) && think == null;
             byte[] screenShot = null;
@@ -3330,6 +3376,7 @@ namespace CapriDesktop
             if (disposing)
             {
                 if (agentSignal != null) agentSignal.Stop();
+                if (lockdown != null) lockdown.Dispose();
                 clickDelay.Dispose();
                 frames.Dispose();
                 signals.Dispose();

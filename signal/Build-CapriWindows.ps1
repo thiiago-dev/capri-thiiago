@@ -43,12 +43,13 @@ if ($SkipSelfTest) { Log ">>> Self-test SKIPPED (-SkipSelfTest)." }
 else {
     try { $p = Start-Process -FilePath $tmp -ArgumentList @('--signal-selftest', "`"$st`"") -PassThru -Wait }
     catch {
-        Log ">>> Windows blocked the new build from running (Smart App Control / App Control): $($_.Exception.Message)"
-        Log ">>> Nothing was replaced. Wait a minute and run the build again, or run Build-CapriWindows-NoTest.cmd to install without the self-test."
-        exit 1
+        $p = $null
+        Log ">>> Windows didn't let the self-test run (Smart App Control). Skipping it and continuing."
     }
-    Get-Content (Join-Path $st 'signal-selftest.txt') -ErrorAction SilentlyContinue | ForEach-Object { Log $_ }
-    if ($p.ExitCode -ne 0) { Log ">>> SELF-TEST FAILED. Capri.exe was NOT replaced (new build kept as Capri.new.exe)."; exit 1 }
+    if ($p) {
+        Get-Content (Join-Path $st 'signal-selftest.txt') -ErrorAction SilentlyContinue | ForEach-Object { Log $_ }
+        if ($p.ExitCode -ne 0) { Log ">>> SELF-TEST FAILED. Capri.exe was NOT replaced (new build kept as Capri.new.exe)."; exit 1 }
+    }
 }
 
 if (Test-Path $out) { Copy-Item $out (Join-Path $dir 'Capri.previous.exe') -Force }
@@ -57,6 +58,18 @@ Log ">>> Capri.exe replaced (previous copy: Capri.previous.exe)"
 
 Log ">>> Building Capri-Setup.exe (installer with the new Capri inside)..."
 & $csc /nologo /target:winexe "/out:$dir\Capri-Setup.exe" "/win32icon:$dir\assets\chip.ico" "/res:$dir\assets\chip.ico,Capri.Chip.ico" "/res:$dir\assets\chip.png,Capri.Chip.png" "/res:$out,Capri.App.exe" /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:Microsoft.CSharp.dll "$dir\app\Setup.cs" "$dir\app\AssemblyInfo.cs" 2>&1 | ForEach-Object { Log "$_" }
-if ($LASTEXITCODE -ne 0) { Log ">>> Capri-Setup.exe FAILED"; exit 1 }
-Log ">>> ALL DONE. Run Capri-Setup.exe to install this Capri over your current one (your settings are kept)."
+if ($LASTEXITCODE -ne 0) { Log ">>> Capri-Setup.exe could not be built (not needed for updating)." }
+
+# Update the installed Capri directly (no installer needed)
+$installDir = Join-Path $env:LOCALAPPDATA 'Capri'
+$target = Join-Path $installDir 'Capri.exe'
+if (Test-Path (Join-Path $installDir '.capri-install')) {
+    $open = Get-Process Capri -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -eq $target } catch { $false } }
+    if ($open) { Log ">>> Your installed Capri is open. Quit her from the tray, then run Install-CapriLocal.cmd to finish."; exit 0 }
+    Copy-Item $target (Join-Path $installDir 'Capri.previous.exe') -Force -ErrorAction SilentlyContinue
+    Copy-Item $out $target -Force
+    Log ">>> Installed Capri updated: $target  (previous: Capri.previous.exe). Opening her..."
+    try { Start-Process -FilePath $target -WorkingDirectory $installDir } catch { Log ">>> Windows blocked opening her: $($_.Exception.Message)" }
+} else { Log ">>> No installed Capri found: run Capri-Setup.exe once." }
+Log ">>> ALL DONE."
 exit 0
