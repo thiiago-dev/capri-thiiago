@@ -2058,9 +2058,9 @@ namespace CapriDesktop
             Job waiting = job;
             if (waiting == null || !waiting.Asking) return null;
             string said = text.Trim();
-            if (Regex.IsMatch(said, @"^(yes|yeah|yep|yup|ya|yea|sure|ok|okay|do it|go ahead|go for it|send it|press it|oui)\b[\s.!,]*(please|pls|plz|choom)?[\s.!]*$", RegexOptions.IgnoreCase)) return Work(waiting);
+            if (Regex.IsMatch(said, @"^(yes|yeah|yep|yup|ya|yea|sure|ok|okay|do it|go ahead|go for it|send it|press it|oui|s[i\u00ed]|vale|dale|hazlo|adelante|claro|venga|ejec[u\u00fa]talo|m[u\u00fa]evelo|reempl[a\u00e1]zalo)\b[\s.!,]*(please|pls|plz|choom)?[\s.!]*$", RegexOptions.IgnoreCase)) return Work(waiting);
             job = null;
-            if (Regex.IsMatch(said, @"^(no|nah|nope|don't|do not|stop|cancel|never mind|nevermind|leave it|non)\b", RegexOptions.IgnoreCase)) return "Okay, I left it alone.";
+            if (Regex.IsMatch(said, @"^(no|nah|nope|don't|do not|stop|cancel|never mind|nevermind|leave it|non|para|cancela|d[e\u00e9]jalo|mejor no)\b", RegexOptions.IgnoreCase)) return "Okay, I left it alone.";
             return null;
         }
 
@@ -2068,13 +2068,45 @@ namespace CapriDesktop
         {
             job = running;
             running.Think = delegate(string system, string user, System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<string, ToolArguments>> calls) { return brain.Step(system, user, Computer.Tools, Computer.ClaudeTools, Computer.Listing, calls); };
+            running.Seeing = delegate(string system, string user, byte[] shot, System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<string, ToolArguments>> calls) { return brain.StepSeeing(system, user, shot, Computer.Tools, Computer.ClaudeTools, Computer.Listing, calls); };
             running.Progress = delegate(string status) { Post(delegate { working = status + " Esc stops me."; UpdateTalk(clock.Elapsed.TotalSeconds); }); };
-            Post(delegate { working = "On it. Esc stops me."; if (typer.Visible) typer.Hide(); PassThrough(true); UpdateTalk(clock.Elapsed.TotalSeconds); });
+            Post(delegate { working = "On it. Esc stops me."; if (typer.Visible) typer.Hide(); PassThrough(true); JobRide(true); AgentShot.HideFromCapture(new[] { Handle, box.Handle, pill.Handle }, true); UpdateTalk(clock.Elapsed.TotalSeconds); });
             try { return running.Run(); }
             finally
             {
                 if (job == running && !running.Asking) job = null;
-                Post(delegate { working = null; PassThrough(false); });
+                Post(delegate { working = null; AgentShot.HideFromCapture(new[] { Handle, box.Handle, pill.Handle }, false); JobRide(false); PassThrough(false); });
+            }
+        }
+
+        private bool jobRiding;
+
+        /// <summary>While she works, Capri rides the cursor so you can see her driving. Click-through, so she never blocks a click.</summary>
+        private void JobRide(bool on)
+        {
+            if (on)
+            {
+                if (riding || hidden || !IsHandleCreated || (lockdown != null && lockdown.Active)) return;
+                jobRiding = true;
+                pendingClick = false;
+                clickDelay.Stop();
+                pressed = false;
+                dragging = false;
+                Capture = false;
+                seat = null;
+                falling = false;
+                hanging = false;
+                riding = true;
+                Native.SetWindowLong(Handle, -20, Native.GetWindowLong(Handle, -20) | 0x20);
+                Play(perchGlitch);
+                frames.Start();
+                pill.Hide();
+            }
+            else
+            {
+                if (!jobRiding) return;
+                jobRiding = false;
+                StopRide();
             }
         }
 

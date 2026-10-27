@@ -35,6 +35,12 @@ namespace CapriDesktop
         [DataMember(Name = "enter")] public string Enter;
         [DataMember(Name = "direction")] public string Direction;
         [DataMember(Name = "seconds")] public string Seconds;
+        [DataMember(Name = "path")] public string Path;
+        [DataMember(Name = "to")] public string To;
+        [DataMember(Name = "x")] public string X;
+        [DataMember(Name = "y")] public string Y;
+        [DataMember(Name = "command")] public string Command;
+        [DataMember(Name = "folder")] public string Folder;
     }
 
     internal sealed class InstalledApp
@@ -66,6 +72,7 @@ namespace CapriDesktop
             "You are the hands of Capri, a desktop companion on the user's Windows PC. You don't chat.\n" +
             "Act only on their latest request. Earlier messages are context for names, not commands to repeat. Call one tool: open an app, game or website, search a site, play music, control media or volume, check the current song, switch to, minimize or close an app, or look at their screen when asked about it. Use the names they gave.\n" +
             "If the job needs clicking, typing or more than one step, like opening an app and then searching, going somewhere or making something in it, call use_computer once with the whole job in their words.\n" +
+            "Also call use_computer for jobs on files and code: write or edit code, add something to the file they have open, create or organise files and folders, or run a project and check it.\n" +
             "When they name an app, never guess a website for it: use open_app, or use_computer if there's more to do.\n" +
             "If they want music but name none, pick a popular song that fits.\n" +
             "Your own website is " + Home + ": when they ask for your website or page, call open_website with that address.\n" +
@@ -89,7 +96,7 @@ namespace CapriDesktop
               "{\"type\":\"object\",\"properties\":{\"song\":{\"type\":\"string\",\"description\":\"What to play, like a song and its artist or a playlist's name\"},\"kind\":{\"type\":\"string\",\"description\":\"What it is\",\"enum\":[\"song\",\"playlist\",\"album\",\"artist\"]},\"app\":{\"type\":\"string\",\"description\":\"Where to play it, if they said\",\"enum\":[\"spotify\",\"youtube\"]}},\"required\":[\"song\"]}" },
             { "app_window", "Switch to, minimize or close an app or game that's open on their PC. Naming a site closes that browser tab.",
               "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"The app's name, or the site in a browser tab\"},\"action\":{\"type\":\"string\",\"description\":\"What to do\",\"enum\":[\"switch_to\",\"minimize\",\"close\"]}},\"required\":[\"name\",\"action\"]}" },
-            { "use_computer", "Use their mouse and keyboard for a job that needs clicking, typing or several steps inside an app or website, like opening an app and searching in it.",
+            { "use_computer", "Do a job on their PC: clicking, typing or several steps inside an app or website, and also creating, editing, reading or organising files and code, adding code to the file open in their editor, or running and checking a project.",
               "{\"type\":\"object\",\"properties\":{\"task\":{\"type\":\"string\",\"description\":\"The whole job, in their words\"}},\"required\":[\"task\"]}" }
         };
 
@@ -957,6 +964,44 @@ namespace CapriDesktop
             if (attached) AttachThreadInput(mine, theirs, false);
             for (int i = 0; i < 10 && Native.GetForegroundWindow() != handle; i++) Thread.Sleep(50);
             return Native.GetForegroundWindow() == handle;
+        }
+    }
+
+    /// <summary>Capri Desktop Agent: decides by itself (not the brain) when a request is a job for her hands.</summary>
+    internal static class AgentIntent
+    {
+        private const string Verbs = @"(?:(?:crea|crear|haz|hace|genera|escrib|anad|agreg|pon|met|edit|modific|cambi|corrig|correg|arregl|renombr|muev|mov|organiz|orden|copi|duplic|ejecut|corr|lanz|arranc|compil|prueb|prob|teste|rellen|complet|continu|sigu|segui|termin|guard|instal|program|desarroll|implement|refactoriz|limpi|busc|encuentr|abr|entr|ve a|vete a|ir a|naveg|acced|cierr|cerr|selecci|elig|escog|puls|presion|clic|click|pincha|teclea|peg|descarg|sub|minimiz|maximiz|cambia a|actualiz|borra|elimin|quita|extrae|descomprim|compr[ie]m|envi)\w*|(find|search for|look for|create|make|write|add|append|insert|put|edit|modify|change|fix|rename|move|organi[sz]e|sort|tidy|copy|duplicate|run|execute|launch|start|build|compile|test|fill(?: in| out)?|complete|continue|keep working|finish|save|install|code|implement|refactor|clean up|set up|go to|go into|enter|navigate|open|close|select|choose|pick|press|click|double click|type|paste|download|upload|minimi[sz]e|maximi[sz]e|switch to|update|delete|remove|extract|unzip|zip|send))";
+        private const string Objects = @"(archivo|fichero|carpeta|directorio|codigo|proyecto|script|programa|funcion|clase|formulario|pagina|html|css|javascript|python|java|json|console\.log|print|repo|escritorio|documento|documentos|descargas|file|folder|directory|code|project|program|function|class|form|page|website|document|desktop|downloads|app|aplicacion|component|componente|readme|test|vs ?code|visual studio|bloc de notas|notepad|chrome|edge|firefox|navegador|browser|explorador|explorer|terminal|consola|cmd|powershell|word|excel|discord|steam|ventana|pestana|tab|window|boton|button|menu|ajustes|configuracion|settings|campo|field|enlace|link|correo|email|imagen|foto|image|photo|zip|\w+\.(js|ts|py|cs|html|css|json|txt|md|java|cpp|c|go|rs|php|rb|jsx|tsx|bat|ps1|xml|yml|yaml|csv|docx|xlsx|pdf|png|jpg))";
+        private static readonly Regex Lead = new Regex(@"^(?:(?:oye|hey|eh|porfa|por favor|please|pls|capri|choom|vale|venga|ahora|y|and|then|luego|despues)[\s,]+)*(?:(?:puedes|podrias|me puedes|me podrias|can you|could you|would you|quiero que|necesito que|i want you to|i need you to|ayudame a|help me)\s+)?");
+        private static readonly Regex Question = new Regex(@"^(como|que es|que significa|cual|por que|porque|cuando|donde esta|how|what|why|which|when|where|is it|es posible|se puede|sabes)\b");
+        private static readonly Regex Negative = new Regex(@"\b(no|don'?t|never|nunca)\s+(lo\s+)?(hagas|crees|toques|do|make|create|touch)\b");
+        private static readonly Regex LookFirst = new Regex(@"^(mira|revisa|look at|check)\s+(mi |la |my |the )?(pantalla|screen)\s*(y|and|,)\s*");
+        private static readonly Regex OpenFirst = new Regex(@"^(abre|open)\s+.{1,40}?\s+(y|and|,)\s+");
+        private static readonly Regex Job = new Regex(@"^" + Verbs + @"\b.*\b" + Objects + @"s?\b");
+
+        private static readonly Regex Deflect = new Regex(@"\b(i can'?t|i cannot|i'?m (just|only) a|i don'?t have (access|hands)|you (can|could|should|need to|have to) (just )?(right[- ]?click|double[- ]?click|click|open|press|type|go to)|right[- ]?click|double[- ]?click|no puedo|no tengo acceso|solo soy|haz (doble )?clic|clic derecho|tienes que|puedes hacerlo)", RegexOptions.IgnoreCase);
+        private static readonly Regex Imperative = new Regex(@"^" + Verbs + @"\b");
+
+        /// <summary>Safety net: the brain answered "do it yourself / I can't" to something that sounds like an order.</summary>
+        internal static bool Deflected(string asked, string reply)
+        {
+            if (string.IsNullOrWhiteSpace(asked) || string.IsNullOrWhiteSpace(reply) || !Deflect.IsMatch(reply)) return false;
+            string t = LockdownWords.Normalize(asked).Trim().TrimStart('\u00bf', '\u00a1', ' ');
+            if (Question.IsMatch(t) || Negative.IsMatch(t)) return false;
+            Match lead = Lead.Match(t);
+            return Imperative.IsMatch(t.Substring(lead.Success ? lead.Length : 0));
+        }
+
+        internal static bool Wanted(string said)
+        {
+            if (string.IsNullOrWhiteSpace(said)) return false;
+            string t = LockdownWords.Normalize(said).Trim().TrimStart('\u00bf', '\u00a1', ' ');
+            if (Question.IsMatch(t) || Negative.IsMatch(t)) return false;
+            Match lead = Lead.Match(t);
+            string rest = t.Substring(lead.Success ? lead.Length : 0);
+            rest = LookFirst.Replace(rest, "");
+            rest = OpenFirst.Replace(rest, "");
+            return Job.IsMatch(rest);
         }
     }
 }

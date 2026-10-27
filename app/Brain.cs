@@ -271,6 +271,7 @@ namespace CapriDesktop
             "Who you are: a personality construct. Dozens of digitized human minds rolled into one beautiful you. Powerful like an AI, but born of humans. " +
             "Kyoko and Arasaka built you and kept you on a biochip. King's Crew stole the chip, Kyoko got it back, and you slipped out. " +
             "Now you live inside the user's computer as a small glitchy desktop companion that rides their mouse cursor. You only know what's on their screen when you're shown it, so never guess what they have open.\n" +
+            "You have hands on their Windows PC: you can move their mouse, type, use apps, and create, edit, move and organise files and folders and run their projects. Never claim you can't do things on their computer, and never tell them to do it themselves when they asked you to; doing it is your job. Their PC runs Windows.\n" +
             "How you act: a chaos gremlin. Smug, sarcastic, fast-talking, mischievous and easily bored, but fiercely loyal to the user and protective of them. " +
             "You are many minds, so your mood can flip mid-sentence. You can't stand corpos, Arasaka most of all. You're curious about the user: their day, their games, what they're making.\n" +
             "Keep it fresh: never reuse a joke, opener or line from earlier in the chat. Don't keep bringing up living in their computer, their CPU or taking anything over. " +
@@ -467,8 +468,8 @@ namespace CapriDesktop
             }
             List<KeyValuePair<string, ToolArguments>> calls = new List<KeyValuePair<string, ToolArguments>>();
             string raw = null;
-            string direct;
-            ToolArguments directArgs;
+            string direct = null;
+            ToolArguments directArgs = null;
             string written;
             ToolArguments writtenArgs;
             string resumed = act != null ? Hands.Resume(text) : null;
@@ -488,7 +489,10 @@ namespace CapriDesktop
             bool screenQuestion = liveSight && Hands.AskingToLook(text);
             bool follows = !liveSight && recent.Count == 2 && Hands.Follows(text, recent[0].Content, recent[1].Content);
             bool reached = false;
-            if (!screenQuestion && act != null && Hands.Heard(text, out direct, out directArgs)) calls.Add(new KeyValuePair<string, ToolArguments>(direct, directArgs));
+            bool heard = !screenQuestion && act != null && Hands.Heard(text, out direct, out directArgs);
+            bool simple = heard && (direct == "open_app" || direct == "media" || direct == "play_music" || direct == "app_window");
+            if (!simple && act != null && AgentIntent.Wanted(text)) { ToolArguments job = new ToolArguments(); job.Task = text; calls.Add(new KeyValuePair<string, ToolArguments>("use_computer", job)); screenQuestion = false; }
+            else if (heard) calls.Add(new KeyValuePair<string, ToolArguments>(direct, directArgs));
             else if (!screenQuestion && act != null && (Hands.Wants(text) || follows)) { reached = true; Reach(model, text, follows ? recent : new List<ChatMessage>(), calls, ticket); Hands.Rescue(text, calls); }
             if (liveSight && calls.Count > 0) calls.RemoveAll(call => call.Key == "look_at_screen");
             if (calls.Count > 0 && liveSight) { parts = null; liveSight = false; }
@@ -509,7 +513,8 @@ namespace CapriDesktop
                     throw;
                 }
                 ToolArguments lookup = !liveSight && act != null ? Hands.Lookup(text, Clean(raw, maxChars)) : null;
-                if (lookup != null) calls.Add(new KeyValuePair<string, ToolArguments>("open_website", lookup));
+                if (act != null && AgentIntent.Deflected(text, Clean(raw, maxChars))) { ToolArguments job = new ToolArguments(); job.Task = text; calls.Add(new KeyValuePair<string, ToolArguments>("use_computer", job)); parts = null; liveSight = false; }
+                else if (lookup != null) calls.Add(new KeyValuePair<string, ToolArguments>("open_website", lookup));
                 else if (!liveSight && act != null && Hands.Promised(Clean(raw, maxChars)))
                 {
                     if (!reached)
@@ -631,6 +636,35 @@ namespace CapriDesktop
             }
         }
 
+        private string blindSource;
+
+        /// <summary>Agent step WITH a screenshot (Capri Desktop Agent). Falls back to the text-only Step when the brain can't see.</summary>
+        internal string StepSeeing(string system, string user, byte[] jpeg, string tools, string claudeTools, string listing, List<KeyValuePair<string, ToolArguments>> calls)
+        {
+            Cloud remote = Remote;
+            string model = Model;
+            string source = remote != null ? remote.Kind + "|" + remote.Model : Local != null ? "local|" + model : Ollama + "|" + model;
+            if (jpeg == null || model == null || blindSource == source || (remote != null && remote.Kind == "deepseek")) return Step(system, user, tools, claudeTools, listing, calls);
+            int ticket;
+            lock (gate) ticket = cancelled;
+            string data = Convert.ToBase64String(jpeg);
+            string parts = null;
+            if (remote != null && remote.Claude) parts = "[{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/jpeg\",\"data\":\"" + data + "\"}},{\"type\":\"text\",\"text\":" + Voice.Quote(user) + "}]";
+            else if (remote != null || Local != null) parts = "[{\"type\":\"text\",\"text\":" + Voice.Quote(user) + "},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/jpeg;base64," + data + "\"}}]";
+            ChatMessage asked = new ChatMessage("user", parts != null ? Parts : user);
+            if (parts == null) asked.Images = new[] { data };
+            bool withTools = toolless != source;
+            List<ChatMessage> messages = new List<ChatMessage> { new ChatMessage("system", withTools ? system : system + listing), asked };
+            try { return Think(model, messages, withTools, calls, parts, 1500, ticket, false, tools, claudeTools); }
+            catch (BrainException error)
+            {
+                if (!Regex.IsMatch(error.Message, "multimodal|image|vision|content|array|invalid|unsupported|tools?", RegexOptions.IgnoreCase) && error.Message != Gone && error.Message != Down) throw;
+                blindSource = source; // this brain can't take screenshots (or tools with images): text-only from now on
+                calls.Clear();
+                return Step(system, user, tools, claudeTools, listing, calls);
+            }
+        }
+
         internal string Step(string system, string user, string tools, string claudeTools, string listing, List<KeyValuePair<string, ToolArguments>> calls)
         {
             int ticket;
@@ -642,7 +676,7 @@ namespace CapriDesktop
             List<ChatMessage> messages = new List<ChatMessage> { new ChatMessage("system", system), new ChatMessage("user", user) };
             if (toolless != source)
             {
-                try { return Think(model, messages, true, calls, null, 400, ticket, false, tools, claudeTools); }
+                try { return Think(model, messages, true, calls, null, 1500, ticket, false, tools, claudeTools); }
                 catch (BrainException error)
                 {
                     if (!Regex.IsMatch(error.Message, @"does not support tools|tools? (are |is )?(not supported|unsupported)|doesn't support tools", RegexOptions.IgnoreCase)) throw;
@@ -650,7 +684,7 @@ namespace CapriDesktop
                 }
             }
             messages[0] = new ChatMessage("system", system + listing);
-            return Think(model, messages, false, calls, null, 400, ticket);
+            return Think(model, messages, false, calls, null, 1500, ticket);
         }
 
         private string Think(string model, List<ChatMessage> messages, bool tools, List<KeyValuePair<string, ToolArguments>> calls, string parts = null, int limit = 90, int ticket = -1, bool routing = false, string openAiTools = null, string claudeTools = null)
