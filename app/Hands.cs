@@ -184,6 +184,7 @@ namespace CapriDesktop
                 if (tool == "look_at_screen") return Look(args.Focus);
                 if (tool == "play_music") return PlayMusic(args.Song, args.App, args.Kind);
                 if (tool == "app_window") return Window(args.Name, args.Action);
+                if (tool == "discord_call") return Computer.DiscordCall(args.Name, args.Kind == "video");
                 if (tool == "use_computer") return string.IsNullOrWhiteSpace(args.Task) ? "Which job, choom?" : Safety.Screen(args.Task) != null ? "Not doing that, choom." : Work(args.Task.Trim());
                 return "There's no tool called " + tool + ".";
             }
@@ -990,6 +991,25 @@ namespace CapriDesktop
             if (Question.IsMatch(t) || Negative.IsMatch(t)) return false;
             Match lead = Lead.Match(t);
             return Imperative.IsMatch(t.Substring(lead.Success ? lead.Length : 0));
+        }
+
+        private static readonly Regex CallOn = new Regex(@"^(?:(?:llama(?:me|le)?|haz(?:me)? una llamada|hazle una llamada|videollama(?:me|le)?|haz(?:me|le)? una videollamada|call|ring|phone|video ?call|start a (?:voice |video )?call with)\s+(?:a\s+|al\s+|con\s+|to\s+|with\s+)?(.+?)\s+(?:en|on|por|via|in|through|desde)\s+(?:el\s+)?discord|(?:en|on)\s+discord,?\s+(?:llama(?:me|le)?|videollama|call|video ?call)\s+(?:a\s+|to\s+)?(.+?))(?:\s+(?:please|pls|porfa|por favor))?\s*[.!?]*$");
+
+        /// <summary>"llama a pepe en discord" / "call pepe on discord" / "videollama a ana por discord".</summary>
+        internal static bool DiscordCall(string said, out string name, out bool video)
+        {
+            name = null;
+            video = false;
+            if (string.IsNullOrWhiteSpace(said)) return false;
+            string t = LockdownWords.Normalize(said).Trim().TrimStart('\u00bf', '\u00a1', ' ');
+            Match lead = Lead.Match(t);
+            string rest = t.Substring(lead.Success ? lead.Length : 0);
+            Match m = CallOn.Match(rest);
+            if (!m.Success) return false;
+            name = (m.Groups[1].Success && m.Groups[1].Length > 0 ? m.Groups[1].Value : m.Groups[2].Value).Trim();
+            name = Regex.Replace(name, @"^(?:el usuario|la usuaria|el|la|user|usuario|my friend|mi amigo|mi amiga)\s+", "");
+            video = Regex.IsMatch(rest, @"video");
+            return name.Length > 0 && name.Length <= 40;
         }
 
         internal static bool Wanted(string said)

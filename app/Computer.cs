@@ -726,6 +726,53 @@ namespace CapriDesktop
 
         private static bool Extended(short code) { return (code >= 0x21 && code <= 0x28) || code == 0x2E || code == 0x5B; }
 
+        private static string Simple(string text)
+        {
+            return Regex.Replace(LockdownWords.Normalize(text ?? ""), @"[^a-z0-9]", "");
+        }
+
+        /// <summary>Calls someone on Discord: open Discord, Ctrl+K quick switcher, open their DM, check it's really them, press the call button.</summary>
+        internal static string DiscordCall(string name, bool video)
+        {
+            name = (name ?? "").Trim().Trim('"', '\'', '@', '.', ',', '!', '?');
+            if (name.Length == 0) return "Who should I call on Discord, choom?";
+            Arm();
+            string opened = Hand("open_app", new ToolArguments { Name = "Discord" });
+            if (Failed(opened)) return "Couldn't open Discord: " + opened;
+            OpenWindow discord = null;
+            Stopwatch wait = Stopwatch.StartNew();
+            while (wait.ElapsedMilliseconds < 15000 && !interrupted)
+            {
+                foreach (OpenWindow w in Hands.Windows()) if (Regex.IsMatch(w.Program ?? "", "^discord", RegexOptions.IgnoreCase)) { discord = w; break; }
+                if (discord != null) break;
+                Pause(500);
+            }
+            if (interrupted) return Why;
+            if (discord == null) return "Discord didn't open in time. Try again once it's loaded.";
+            if (!Hands.Front(discord.Handle)) { Pause(800); if (!Hands.Front(discord.Handle)) return "Couldn't bring Discord to the front."; }
+            Pause(600);
+            if (!Keys("ctrl+k")) return "Couldn't open Discord's quick switcher.";
+            Pause(700);
+            Write(name);
+            Pause(1200);
+            Keys("enter");
+            Pause(2000);
+            if (interrupted) return Why;
+            OpenWindow now = Pick();
+            string title = now == null ? "" : now.Title;
+            if (Simple(title).IndexOf(Simple(name), StringComparison.Ordinal) < 0)
+                return "I opened a Discord chat, but it doesn't look like " + name + " (" + title + "), so I didn't call. Check the name, choom.";
+            Sight sight = See(now);
+            Regex button = video
+                ? new Regex(@"^(start video call|iniciar videollamada|videollamada|video call)", RegexOptions.IgnoreCase)
+                : new Regex(@"^(start (a )?voice call|start call|iniciar llamada( de voz)?|llamada de voz|voice call|call)$", RegexOptions.IgnoreCase);
+            Target call = sight.Targets.Find(t => button.IsMatch(t.Name ?? ""));
+            if (call == null) return "I opened the chat with " + name + " but couldn't find the " + (video ? "video" : "call") + " button. It's at the top right of the chat.";
+            Click(call.Middle, "left");
+            Pause(800);
+            return interrupted ? Why : (video ? "Video calling " : "Calling ") + name + " on Discord.";
+        }
+
         internal static void CloseDoomTab(Action<Point> onMove = null)
         {
             Arm();

@@ -491,7 +491,10 @@ namespace CapriDesktop
             bool reached = false;
             bool heard = !screenQuestion && act != null && Hands.Heard(text, out direct, out directArgs);
             bool simple = heard && (direct == "open_app" || direct == "media" || direct == "play_music" || direct == "app_window");
-            if (!simple && act != null && AgentIntent.Wanted(text)) { ToolArguments job = new ToolArguments(); job.Task = text; calls.Add(new KeyValuePair<string, ToolArguments>("use_computer", job)); screenQuestion = false; }
+            string callName;
+            bool callVideo;
+            if (act != null && AgentIntent.DiscordCall(text, out callName, out callVideo)) { ToolArguments call = new ToolArguments(); call.Name = callName; call.Kind = callVideo ? "video" : "voice"; calls.Add(new KeyValuePair<string, ToolArguments>("discord_call", call)); screenQuestion = false; }
+            else if (!simple && act != null && AgentIntent.Wanted(text)) { ToolArguments job = new ToolArguments(); job.Task = text; calls.Add(new KeyValuePair<string, ToolArguments>("use_computer", job)); screenQuestion = false; }
             else if (heard) calls.Add(new KeyValuePair<string, ToolArguments>(direct, directArgs));
             else if (!screenQuestion && act != null && (Hands.Wants(text) || follows)) { reached = true; Reach(model, text, follows ? recent : new List<ChatMessage>(), calls, ticket); Hands.Rescue(text, calls); }
             if (liveSight && calls.Count > 0) calls.RemoveAll(call => call.Key == "look_at_screen");
