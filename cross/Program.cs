@@ -25,6 +25,7 @@ namespace CapriDesktop
                 Shelf = new[] { int.Parse(args[1]), int.Parse(args[2]), int.Parse(args[3]), int.Parse(args[4]) };
                 return AppBuilder.Configure<ShelfApp>().UsePlatformDetect().StartWithClassicDesktopLifetime(args, ShutdownMode.OnExplicitShutdown);
             }
+            if (args.Length >= 1 && args[0] == "--signal-selftest") return Signal.SignalSelfTest.Run(args.Length >= 2 ? args[1] : null);
             if (args.Length >= 2 && args[0] == "--smoke") Smoke = Path.GetFullPath(args[1]);
             return AppBuilder.Configure<CapriApp>().UsePlatformDetect().With(new MacOSPlatformOptions { ShowInDock = false }).StartWithClassicDesktopLifetime(args, ShutdownMode.OnExplicitShutdown);
         }
@@ -44,6 +45,17 @@ namespace CapriDesktop
             if (desktop != null)
             {
                 Pet pet = new Pet(desktop);
+                Signal.SignalHub signal = null;
+                if (Program.Smoke == null)
+                {
+                    try
+                    {
+                        signal = new Signal.SignalHub(Signal.SignalSettings.DefaultFolder(), delegate { pet.Alert(); });
+                        pet.ContextMenu.Items.Insert(Math.Max(0, pet.ContextMenu.Items.Count - 2), signal.ContextMenuItem());
+                        desktop.Exit += delegate { signal.Dispose(); };
+                    }
+                    catch (Exception) { signal = null; } // Capri must keep working even if Signal can't start
+                }
                 NativeMenu menu = new NativeMenu();
                 NativeMenuItem talk = new NativeMenuItem("Talk to her");
                 talk.Click += delegate { pet.Talk.Open(); };
@@ -53,6 +65,7 @@ namespace CapriDesktop
                 quit.Click += delegate { pet.Quit(); };
                 menu.Items.Add(talk);
                 menu.Items.Add(bring);
+                if (signal != null) menu.Items.Add(signal.TrayItem());
                 menu.Items.Add(new NativeMenuItemSeparator());
                 menu.Items.Add(quit);
                 TrayIcon tray = new TrayIcon();
@@ -63,6 +76,7 @@ namespace CapriDesktop
                 icons.Add(tray);
                 TrayIcon.SetIcons(this, icons);
                 pet.Show();
+                if (signal != null) { try { signal.Start(); } catch (Exception) { } }
             }
             base.OnFrameworkInitializationCompleted();
         }
